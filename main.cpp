@@ -99,7 +99,7 @@ static void client(const char *p){
 
     auto now = T_nowi();
     auto diff = (sint64_t)now - (sint64_t)wanted_time;
-    if(diff >= (sint64_t)ns_per){
+    if(diff >= (sint64_t)(ns_per / inaccuracy_time_divide)){
       std::print("fail: {}ns late\n", diff);
     }
   }
