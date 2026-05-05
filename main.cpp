@@ -1,3 +1,5 @@
+#define MAX_PACKETS_PER_DROP (16384)
+
 #include <WITCH/WITCH.h>
 #include <WITCH/PR/PR.h>
 #include <WITCH/T/T.h>
@@ -43,7 +45,7 @@ static void client(const char *p){
           }
   
           auto *rv = &ring[ci % (sizeof(ring) / sizeof(ring[0]))];
-          if(!__atomic_load_n(rv, __ATOMIC_SEQ_CST)){
+          if(__atomic_load_n(rv, __ATOMIC_SEQ_CST) != 1){
             std::print(
               "fail: unexpected reply.\n"
               "producer: {} consumer: {}\n",
@@ -62,9 +64,27 @@ static void client(const char *p){
 
   auto wanted_time = T_nowi();
 
+  auto sent_packet_index = (uint64_t)0;
+  auto last_fail_producer_index = (uint64_t)-MAX_PACKETS_PER_DROP;
+
   while(1){
     wanted_time += ns_per;
     auto wanted_time_early = wanted_time - ns_per / inaccuracy_time_divide;
+
+    auto process_ring_element = [&](uint64_t pi, uint8_t new_value){
+      auto *v = &ring[pi % (sizeof(ring) / sizeof(ring[0]))];
+      auto v_value = __atomic_load_n(v, __ATOMIC_SEQ_CST);
+      if(v_value == 1){
+        if(sent_packet_index - last_fail_producer_index < MAX_PACKETS_PER_DROP){
+          std::print("{} didnt got reply\n", pi - sizeof(ring) / sizeof(ring[0]));
+        }
+        last_fail_producer_index = sent_packet_index;
+      }
+      if(v_value != 2){
+        sent_packet_index += 1;
+      }
+      __atomic_store_n(v, new_value, __ATOMIC_SEQ_CST);
+    };
 
     while(1){
       auto diff = (sint64_t)(wanted_time_early - T_nowi());
@@ -79,11 +99,7 @@ static void client(const char *p){
       __processor_relax();
     }
 
-    auto *v = &ring[producer_index % (sizeof(ring) / sizeof(ring[0]))];
-    if(__atomic_load_n(v, __ATOMIC_SEQ_CST)){
-      std::print("{} didnt got reply\n", producer_index - (sizeof(ring) / sizeof(ring[0])));
-    }
-    __atomic_store_n(v, 1, __ATOMIC_SEQ_CST);
+    process_ring_element(producer_index, 1);
 
     while(1){
       auto r = NET_sendto(&sock, &producer_index, sizeof(producer_index), &addr4port);
@@ -100,7 +116,18 @@ static void client(const char *p){
     auto now = T_nowi();
     auto diff = (sint64_t)now - (sint64_t)wanted_time;
     if(diff >= (sint64_t)(ns_per / inaccuracy_time_divide)){
-      std::print("fail: {}ns late\n", diff);
+      uint64_t skip_count = diff / ns_per;
+      if(skip_count){
+        //std::print("fail: {} is {}ns late. skipping {} times.\n", producer_index, diff, skip_count);
+        for(auto pi = producer_index; pi < producer_index + skip_count; pi += 1){
+          process_ring_element(pi, 2);
+        }
+        wanted_time += skip_count * ns_per;
+        __atomic_add_fetch(&producer_index, skip_count, __ATOMIC_SEQ_CST);
+      }
+      else{
+        //std::print("fail: {} is {}ns late.\n", producer_index, diff);
+      }
     }
   }
 }
