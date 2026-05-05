@@ -2,6 +2,7 @@
 #include <WITCH/PR/PR.h>
 #include <WITCH/T/T.h>
 #include <WITCH/NET/NET.h>
+#include <WITCH/TH/TH.h>
 
 #include <thread>
 #include <print>
@@ -57,7 +58,7 @@ static void client(const char *p){
   });
 
   auto ns_per = (uint64_t)1'000'000;
-  auto inaccuracy_time_divide = (uint64_t)10;
+  auto inaccuracy_time_divide = (uint64_t)2;
 
   auto wanted_time = T_nowi();
 
@@ -66,8 +67,13 @@ static void client(const char *p){
     auto wanted_time_early = wanted_time - ns_per / inaccuracy_time_divide;
 
     while(1){
-      if(T_nowi() >= wanted_time_early){
+      auto diff = (sint64_t)(wanted_time_early - T_nowi());
+
+      if(diff <= 0){
         break;
+      }
+      if(diff > 500'000){
+        TH_sleepi(diff);
       }
 
       __processor_relax();
