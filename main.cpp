@@ -8,6 +8,7 @@
 
 #include <thread>
 #include <print>
+#include <chrono>
 
 static void client(const char *p){
   NET_addr4port_t addr4port;
@@ -71,12 +72,14 @@ static void client(const char *p){
     wanted_time += ns_per;
     auto wanted_time_early = wanted_time - ns_per / inaccuracy_time_divide;
 
-    auto process_ring_element = [&](uint64_t pi, uint8_t new_value){
+    auto process_ring_element = [&](uint64_t pi, uint64_t hidden_offset, uint8_t new_value){
       auto *v = &ring[pi % (sizeof(ring) / sizeof(ring[0]))];
       auto v_value = __atomic_load_n(v, __ATOMIC_SEQ_CST);
       if(v_value == 1){
         if(sent_packet_index - last_fail_producer_index < MAX_PACKETS_PER_DROP){
-          std::print("{} didnt got reply\n", pi - sizeof(ring) / sizeof(ring[0]));
+          auto ns_sub = (sizeof(ring) / sizeof(ring[0]) + hidden_offset) * ns_per;
+          auto real = std::chrono::system_clock::now() - std::chrono::nanoseconds(ns_sub);
+          std::println("{} didnt got reply {}", pi - sizeof(ring) / sizeof(ring[0]), real);
         }
         last_fail_producer_index = sent_packet_index;
       }
@@ -99,7 +102,7 @@ static void client(const char *p){
       __processor_relax();
     }
 
-    process_ring_element(producer_index, 1);
+    process_ring_element(producer_index, 0, 1);
 
     while(1){
       auto r = NET_sendto(&sock, &producer_index, sizeof(producer_index), &addr4port);
@@ -120,7 +123,7 @@ static void client(const char *p){
       if(skip_count){
         //std::print("fail: {} is {}ns late. skipping {} times.\n", producer_index, diff, skip_count);
         for(auto pi = producer_index; pi < producer_index + skip_count; pi += 1){
-          process_ring_element(pi, 2);
+          process_ring_element(pi, (producer_index + skip_count) - pi, 2);
         }
         wanted_time += skip_count * ns_per;
         __atomic_add_fetch(&producer_index, skip_count, __ATOMIC_SEQ_CST);
